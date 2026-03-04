@@ -1,0 +1,46 @@
+# Docker Compose 配置文件
+version: '3.8'
+
+services:
+  trmd:
+    build: .
+    container_name: telegram_restricted_media_downloader
+    restart: unless-stopped
+
+    # 挂载目录
+    volumes:
+      # 会话文件目录（保存登录信息）
+      - ./sessions:/app/sessions
+      # 缓存目录
+      - ./temp:/app/temp
+      # 输出目录
+      - ./output:/app/output
+      # 下载文件目录
+      - ./downloads:/app/downloads
+      # 配置文件（可选，如果需要在容器外配置）
+      - ./config.yaml:/app/config.yaml:ro
+
+    # 环境变量
+    environment:
+      - TZ=Asia/Shanghai
+      - PYTHONUNBUFFERED=1
+      # 可以通过环境变量覆盖配置文件中的路径
+      - TRMD_SESSION_DIR=/app/sessions
+      - TRMD_TEMP_DIR=/app/temp
+      - TRMD_OUTPUT_DIR=/app/output
+      - TRMD_DOWNLOAD_DIR=/app/downloads
+
+    # Web 模式端口（可选）
+    ports:
+      - '8080:8080'
+
+    # 网络模式（根据需要选择）
+    network_mode: host
+
+    # 或者使用桥接模式
+    # networks:
+    #   - trmd_network
+
+# networks:
+#   trmd_network:
+#     driver: bridge
