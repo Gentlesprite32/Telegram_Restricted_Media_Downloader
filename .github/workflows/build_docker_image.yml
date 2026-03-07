@@ -31,7 +31,7 @@ jobs:
           context: .
           push: false
           tags: trmd:${{ github.event.inputs.tag || 'latest' }}
-          outputs: type=docker,dest=/tmp/trmd-${{ github.event.inputs.tag || 'latest' }}.tar
+          outputs: type=docker,dest=/tmp/TRMD_${{ github.event.inputs.tag || 'latest' }}.tar
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
@@ -39,6 +39,6 @@ jobs:
       - name: Upload Docker image artifact
         uses: actions/upload-artifact@v4
         with:
-          name: trmd-docker-image-${{ github.event.inputs.tag || 'latest' }}
+          name: TRMD_docker_image_${{ github.event.inputs.tag || 'latest' }}
           path: /tmp/TRMD_${{ github.event.inputs.tag || 'latest' }}.tar
           retention-days: 30
