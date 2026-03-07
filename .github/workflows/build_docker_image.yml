@@ -1,11 +1,13 @@
 name: Build Docker Image
 
 on:
-  # 手动触发
+  push:
+    tags:
+      - 'v*.*.*'
   workflow_dispatch:
     inputs:
       tag:
-        description: '镜像标签 (例如: 1.8.8, latest)'
+        description: '镜像标签'
         required: false
         default: 'latest'
 
@@ -38,5 +40,5 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: trmd-docker-image-${{ github.event.inputs.tag || 'latest' }}
-          path: /tmp/trmd-${{ github.event.inputs.tag || 'latest' }}.tar
+          path: /tmp/TRMD_${{ github.event.inputs.tag || 'latest' }}.tar
           retention-days: 30
