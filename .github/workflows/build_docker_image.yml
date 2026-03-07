@@ -16,15 +16,15 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      # 1. 检出代码
+      # 1.检出代码。
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      # 2. 设置 Docker Buildx
+      # 2.设置 Docker Buildx。
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
-      # 3. 构建镜像
+      # 3.构建镜像。
       - name: Build Docker image
         uses: docker/build-push-action@v5
         with:
@@ -35,7 +35,7 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
-      # 4. 上传镜像文件供下载
+      # 4.上传镜像文件供下载。
       - name: Upload Docker image artifact
         uses: actions/upload-artifact@v4
         with:
