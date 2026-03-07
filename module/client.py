@@ -4,10 +4,21 @@
 # Time:2025/2/25 1:26
 # File:client.py
 import asyncio
+import functools
+import inspect
+
 from datetime import datetime
-from typing import AsyncGenerator, Optional, Union, List
+from hashlib import sha256
+from typing import (
+    AsyncGenerator,
+    Optional,
+    Union,
+    List,
+    Callable
+)
 
 import pyrogram
+from pyrogram.crypto import aes
 from pyrogram.qrlogin import QRLogin
 from pyrogram import raw, types, utils
 from pyrogram.errors.exceptions import PhoneNumberInvalid
@@ -21,11 +32,19 @@ from pyrogram.crypto import mtproto
 from pyrogram.errors import (
     FloodPremiumWait,
     FloodWait,
+    FileReferenceExpired,
     InternalServerError,
     ServiceUnavailable,
     AuthBytesInvalid,
     BadMsgNotification,
-    RPCError
+    RPCError,
+    CDNFileHashMismatch,
+    VolumeLocNotFound
+)
+from pyrogram.file_id import (
+    FileId,
+    FileType,
+    ThumbnailSource
 )
 from pyrogram.types import User
 
@@ -425,6 +444,199 @@ class TelegramRestrictedMediaDownloaderClient(pyrogram.Client):
 
         return session
 
+    async def get_file(
+            self,
+            file_id: FileId,
+            file_size: int = 0,
+            limit: int = 0,
+            offset: int = 0,
+            progress: Callable = None,
+            progress_args: tuple = ()
+    ) -> AsyncGenerator[bytes, None]:
+        async with self.get_file_semaphore:
+            file_type = file_id.file_type
+
+            if file_type == FileType.CHAT_PHOTO:
+                if file_id.chat_id > 0:
+                    peer = raw.types.InputPeerUser(
+                        user_id=file_id.chat_id,
+                        access_hash=file_id.chat_access_hash
+                    )
+                else:
+                    if file_id.chat_access_hash == 0:
+                        peer = raw.types.InputPeerChat(
+                            chat_id=-file_id.chat_id
+                        )
+                    else:
+                        peer = raw.types.InputPeerChannel(
+                            channel_id=utils.get_channel_id(file_id.chat_id),
+                            access_hash=file_id.chat_access_hash
+                        )
+
+                location = raw.types.InputPeerPhotoFileLocation(
+                    peer=peer,
+                    photo_id=file_id.media_id,
+                    big=file_id.thumbnail_source == ThumbnailSource.CHAT_PHOTO_BIG
+                )
+            elif file_type == FileType.PHOTO:
+                location = raw.types.InputPhotoFileLocation(
+                    id=file_id.media_id,
+                    access_hash=file_id.access_hash,
+                    file_reference=file_id.file_reference,
+                    thumb_size=file_id.thumbnail_size
+                )
+            else:
+                location = raw.types.InputDocumentFileLocation(
+                    id=file_id.media_id,
+                    access_hash=file_id.access_hash,
+                    file_reference=file_id.file_reference,
+                    thumb_size=file_id.thumbnail_size
+                )
+
+            current = 0
+            total = abs(limit) or (1 << 31) - 1
+            chunk_size = 1024 * 1024
+            offset_bytes = abs(offset) * chunk_size
+
+            dc_id = file_id.dc_id
+
+            try:
+                session = await self.get_session(dc_id, is_media=True)
+
+                r = await session.invoke(
+                    raw.functions.upload.GetFile(
+                        location=location,
+                        offset=offset_bytes,
+                        limit=chunk_size
+                    ),
+                    sleep_threshold=30
+                )
+
+                if isinstance(r, raw.types.upload.File):
+                    while True:
+                        chunk = r.bytes
+
+                        yield chunk
+
+                        current += 1
+                        offset_bytes += chunk_size
+
+                        if progress:
+                            func = functools.partial(
+                                progress,
+                                min(offset_bytes, file_size)
+                                if file_size != 0
+                                else offset_bytes,
+                                file_size,
+                                *progress_args
+                            )
+
+                            if inspect.iscoroutinefunction(progress):
+                                await func()
+                            else:
+                                await self.loop.run_in_executor(self.executor, func)
+
+                        if len(chunk) < chunk_size or current >= total:
+                            break
+
+                        r = await session.invoke(
+                            raw.functions.upload.GetFile(
+                                location=location,
+                                offset=offset_bytes,
+                                limit=chunk_size
+                            ),
+                            sleep_threshold=30
+                        )
+
+                elif isinstance(r, raw.types.upload.FileCdnRedirect):
+
+                    cdn_session = await self.get_session(dc_id, is_cdn=True, temporary=True)
+
+                    try:
+                        while True:
+                            r2 = await cdn_session.invoke(
+                                raw.functions.upload.GetCdnFile(
+                                    file_token=r.file_token,
+                                    offset=offset_bytes,
+                                    limit=chunk_size
+                                )
+                            )
+
+                            if isinstance(r2, raw.types.upload.CdnFileReuploadNeeded):
+                                try:
+                                    await session.invoke(
+                                        raw.functions.upload.ReuploadCdnFile(
+                                            file_token=r.file_token,
+                                            request_token=r2.request_token
+                                        )
+                                    )
+                                except VolumeLocNotFound:
+                                    break
+                                else:
+                                    continue
+
+                            chunk = r2.bytes
+
+                            # https://core.telegram.org/cdn#decrypting-files
+                            decrypted_chunk = await self.loop.run_in_executor(
+                                self.executor,
+                                aes.ctr256_decrypt,
+                                chunk,
+                                r.encryption_key,
+                                bytearray(r.encryption_iv[:-4] + (offset_bytes // 16).to_bytes(4, "big"))
+                            )
+
+                            hashes = await session.invoke(
+                                raw.functions.upload.GetCdnFileHashes(
+                                    file_token=r.file_token,
+                                    offset=offset_bytes
+                                )
+                            )
+
+                            # https://core.telegram.org/cdn#verifying-files
+                            def _check_all_hashes():
+                                for i, h in enumerate(hashes):
+                                    cdn_chunk = decrypted_chunk[h.limit * i: h.limit * (i + 1)]
+                                    CDNFileHashMismatch.check(
+                                        h.hash == sha256(cdn_chunk).digest(),
+                                        "h.hash == sha256(cdn_chunk).digest()"
+                                    )
+
+                            await self.loop.run_in_executor(self.executor, _check_all_hashes)
+
+                            yield decrypted_chunk
+
+                            current += 1
+                            offset_bytes += chunk_size
+
+                            if progress:
+                                func = functools.partial(
+                                    progress,
+                                    min(offset_bytes, file_size) if file_size != 0 else offset_bytes,
+                                    file_size,
+                                    *progress_args
+                                )
+
+                                if inspect.iscoroutinefunction(progress):
+                                    await func()
+                                else:
+                                    await self.loop.run_in_executor(self.executor, func)
+
+                            if len(chunk) < chunk_size or current >= total:
+                                break
+                    except Exception as e:
+                        raise e
+                    finally:
+                        await cdn_session.stop()
+            except pyrogram.StopTransmission:
+                raise
+            except (FloodWait, FloodPremiumWait):
+                raise
+            except FileReferenceExpired:
+                raise
+            except Exception as e:
+                log.exception(e)
+
 
 async def get_chunk(
         *,
@@ -489,7 +701,8 @@ class TelegramRestrictedMediaDownloaderSession(Session):
             inner_query = query.query
         else:
             inner_query = query
-        reconnect_delay: int = 60
+        reconnect_delay: int = 5
+        max_reconnect_delay: int = 60
         query_name = '.'.join(inner_query.QUALNAME.split('.')[1:])
         while True:
             for attempt in range(1, retries + 1):
@@ -523,8 +736,12 @@ class TelegramRestrictedMediaDownloaderSession(Session):
 
                     await asyncio.sleep(retry_delay)
 
-            log.error(f'经{retries}次尝试后仍无法调用"{query_name}",请检查网络环境,等待{reconnect_delay}秒后重新尝试。')
-            await asyncio.sleep(reconnect_delay)
+            wait_time: int = min(reconnect_delay, max_reconnect_delay)
+            log.error(f'经{retries}次尝试后仍无法调用"{query_name}",请检查网络环境,等待{wait_time}秒后重新尝试。')
+            await asyncio.sleep(wait_time)
+            console.log(f'已等待{wait_time}秒,重新尝试重连。', style='#B1DB74')
+            if reconnect_delay < max_reconnect_delay:
+                reconnect_delay += 5
 
     async def send(
             self,
