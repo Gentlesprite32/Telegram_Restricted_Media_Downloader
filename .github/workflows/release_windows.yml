@@ -4,10 +4,18 @@ on:
   push:
     tags:
       - 'v*.*.*'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: '版本标签,例如 v2.0.1'
+        required: false
+        default: ''
 
 jobs:
   build:
     runs-on: windows-latest
+    permissions:
+      contents: write
     steps:
     - name: Checkout repository
       uses: actions/checkout@v6
@@ -25,17 +33,32 @@ jobs:
         pip install -r requirements.txt
         pip install nuitka==2.6.7
 
+    - name: Set up MSVC
+      uses: ilammy/msvc-dev-cmd@v1
+      with:
+        arch: x64
+
+    - name: Verify MSVC
+      shell: bash
+      run: |
+        which cl || { echo 'cl.exe 不在 PATH 中,MSVC 环境未激活。'; exit 1; }
+        echo "VCINSTALLDIR=$VCINSTALLDIR"
+
     - name: Extract metadata
       shell: bash
       run: |
-        TAG_NAME=${GITHUB_REF#refs/tags/}
+        if [ -n "${{ inputs.tag }}" ]; then
+          TAG_NAME="${{ inputs.tag }}"
+        else
+          TAG_NAME=${GITHUB_REF#refs/tags/}
+        fi
         CLEAN_VERSION=${TAG_NAME#v}
         echo "TAG_NAME=$TAG_NAME" >> $GITHUB_ENV
         echo "CLEAN_VERSION=$CLEAN_VERSION" >> $GITHUB_ENV
 
     - name: Build with Nuitka
       shell: bash
-      run:
+      run: |
         python build.py
 
     - name: Prepare release files
