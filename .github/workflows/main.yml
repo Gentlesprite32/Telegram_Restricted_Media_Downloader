@@ -1,0 +1,27 @@
+name: Release Windows
+
+on:
+  push:
+    tags:
+      - 'v*.*.*'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: '版本标签,例如 v2.0.1'
+        required: false
+        default: ''
+
+jobs:
+  build:
+    runs-on: windows-2025
+    steps:
+    - name: Print Visual Studio version
+      shell: pwsh
+      run: |
+        $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
+        Write-Host "=== Visual Studio version ==="
+        & $vswhere -latest -products * -property catalog_productDisplayVersion
+        Write-Host "=== Installation path ==="
+        & $vswhere -latest -products * -property installationPath
+        Write-Host "=== MSVC toolset version ==="
+        & $vswhere -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationVersion
