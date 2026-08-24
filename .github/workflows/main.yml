@@ -19,9 +19,25 @@ jobs:
       shell: pwsh
       run: |
         $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
-        Write-Host "=== Visual Studio version ==="
-        & $vswhere -latest -products * -property catalog_productDisplayVersion
-        Write-Host "=== Installation path ==="
-        & $vswhere -latest -products * -property installationPath
-        Write-Host "=== MSVC toolset version ==="
-        & $vswhere -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationVersion
+        $lines = @(
+          "=== Visual Studio version ===",
+          (& $vswhere -latest -products * -property catalog_productDisplayVersion),
+          "=== Installation path ===",
+          (& $vswhere -latest -products * -property installationPath),
+          "=== MSVC toolset version ===",
+          (& $vswhere -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationVersion)
+        )
+        $lines | ForEach-Object { Write-Host $_ }
+        $lines | Out-File -FilePath vs_version.txt -Encoding utf8
+
+    - name: Archive VS version log
+      shell: pwsh
+      run: |
+        Compress-Archive -Path vs_version.txt -DestinationPath vs-version-log.zip -Force
+
+    - name: Upload VS version log
+      uses: actions/upload-artifact@v4
+      with:
+        name: vs-version-log
+        path: vs-version-log.zip
+        if-no-files-found: error
