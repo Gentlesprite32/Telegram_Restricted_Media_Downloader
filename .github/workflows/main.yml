@@ -1,43 +1,33 @@
-name: Release Windows
+name: Test Nuitka Build
 
 on:
-  push:
-    tags:
-      - 'v*.*.*'
   workflow_dispatch:
-    inputs:
-      tag:
-        description: '版本标签,例如 v2.0.1'
-        required: false
-        default: ''
 
 jobs:
-  build:
+  test:
     runs-on: windows-2022
     steps:
-    - name: Print Visual Studio version
-      shell: pwsh
-      run: |
-        $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
-        $lines = @(
-          "=== Visual Studio version ===",
-          (& $vswhere -latest -products * -property catalog_productDisplayVersion),
-          "=== Installation path ===",
-          (& $vswhere -latest -products * -property installationPath),
-          "=== MSVC toolset version ===",
-          (& $vswhere -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationVersion)
-        )
-        $lines | ForEach-Object { Write-Host $_ }
-        $lines | Out-File -FilePath vs_version.txt -Encoding utf8
-
-    - name: Archive VS version log
-      shell: pwsh
-      run: |
-        Compress-Archive -Path vs_version.txt -DestinationPath vs-version-log.zip -Force
-
-    - name: Upload VS version log
-      uses: actions/upload-artifact@v4
+    - name: Set up Python 3.13.2
+      uses: actions/setup-python@v6
       with:
-        name: vs-version-log
-        path: vs-version-log.zip
-        if-no-files-found: error
+        python-version: '3.13.2'
+
+    - name: Install Nuitka
+      run: |
+        python -m pip install --upgrade pip
+        pip install nuitka==2.6.7
+
+    - name: Create hello.py
+      shell: pwsh
+      run: |
+        Set-Content -Path hello.py -Value 'print("Hello World")'
+
+    - name: Build with Nuitka
+      shell: pwsh
+      run: |
+        python -m nuitka --onefile --msvc=latest --assume-yes-for-downloads --output-dir=build hello.py
+
+    - name: Run hello.exe
+      shell: pwsh
+      run: |
+        .\build\hello.exe
