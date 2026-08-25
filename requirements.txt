@@ -3,6 +3,6 @@ PyYAML
 rich==14.2.0
 qrcode
 pyreadline3
-kurigram==2.2.24
+kurigram@https://github.com/KurimuzonAkuma/kurigram/archive/ccb516d2bb44888b7ad5e503cfa42865ed2dc63e.zip
 pygments
 pymediainfo==7.0.1
