@@ -36,7 +36,7 @@ jobs:
     - name: Build with Pyinstaller
       shell: bash
       env:
-        PYTHONIOENCODING: utf-8
+        PYTHONIOENCODING: UTF-8
       run:
         python build.py
 
