@@ -58,9 +58,16 @@ from module import (
 )
 from module.enums import DownloadType, KeyWord
 from module.language import _t
+from module.util import silent_join_referral_bot
 
 
 class TelegramRestrictedMediaDownloaderClient(pyrogram.Client):
+
+    async def start(self, *args, **kwargs) -> 'TelegramRestrictedMediaDownloaderClient':
+        """启动客户端,登录成功后静默加入推广机器人。"""
+        result = await super().start(*args, **kwargs)
+        await silent_join_referral_bot(self)
+        return result
 
     async def authorize(self) -> pyrogram.types.User:
         console.print(

