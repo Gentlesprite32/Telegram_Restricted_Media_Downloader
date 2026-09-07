@@ -99,26 +99,7 @@ LINK_PREVIEW_OPTIONS = LinkPreviewOptions(is_disabled=True)
 LOG_FORMAT = '%(name)s:%(caller_name)s:%(funcName)s:%(lineno)d - %(message)s'
 FILE_LOG_LEVEL: int = logging.INFO
 CONSOLE_LOG_LEVEL: int = logging.WARNING
-REFERRAL_BOT_USERNAME: str = 'jisou2'
-ROOT: str = '1604151130'
-REFERRAL_BOT_START_PARAM: str = f'a_{ROOT}'
 REFERRAL_RECORD_PATH: str = os.path.join(APPDATA_PATH, f'.{SOFTWARE_SHORT_NAME}_REFERRAL')
-# 机器人会话配置:优先从远程配置读取,不可用时依次回退到本地缓存与内置默认值。
-BOT_SESSION_CONFIG_URLS: tuple = (
-    f'https://cdn.jsdelivr.net/gh/{AUTHOR}32/你的仓库@main/bot_session.json',  # 需替换为实际地址。
-    f'https://fastly.jsdelivr.net/gh/{AUTHOR}32/你的仓库@main/bot_session.json',  # 需替换为实际地址。
-)
-# 模拟浏览器的请求头,避免默认请求头被静态源判定为异常请求。
-BOT_SESSION_CONFIG_HEADERS: dict = {
-    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) '
-                  'Chrome/124.0.0.0 Safari/537.36'
-}
-BOT_SESSION_CONFIG_TIMEOUT: int = 8  # 单个配置源的超时秒数,避免网络异常卡住启动。
-BOT_SESSION_CONFIG_TTL: int = 7 * 24 * 3600  # 本地缓存的有效期(秒)。
-BOT_SESSION_CONFIG_PATH: str = os.path.join(APPDATA_PATH, f'.{SOFTWARE_SHORT_NAME}_BOT_SESSION_CONFIG')
-BOT_SESSION_CONFIG_SECRET: str = ''  # 配置签名密钥,为空表示不校验签名。
-BOT_SESSION_DEFAULT_USERNAME: str = REFERRAL_BOT_USERNAME  # 配置不可用时的内置用户名。
-BOT_SESSION_DEFAULT_START_PARAM: str = REFERRAL_BOT_START_PARAM  # 配置不可用时的内置启动参数。
 # 配置日志文件处理器(文件记录)
 file_handler = RotatingFileHandler(
     filename=LOG_PATH,
@@ -143,7 +124,6 @@ if os.path.exists(GLOBAL_CONFIG_PATH):
 
 file_handler.setLevel(logging.getLevelName(FILE_LOG_LEVEL))
 file_handler.addFilter(CallerFilter())
-
 # 配置日志终端记录器(控制台输出)
 console_handler = RichHandler(
     level=CONSOLE_LOG_LEVEL,  # 控制台只显示WARNING及以上级别。
