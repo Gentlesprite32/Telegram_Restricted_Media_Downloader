@@ -36,10 +36,12 @@ from module import (
     __copyright__,
     __license__
 )
+from module.remote import rc
 from module.language import _t
 from module.util import (
     get_terminal_width,
-    is_docker
+    is_docker,
+    check_update
 )
 from module.enums import (
     DownloadType,
@@ -53,9 +55,9 @@ from module.enums import (
 
 class StatisticalTable:
     def __init__(self):
-        self.skip_video, self.skip_photo, self.skip_document, self.skip_audio, self.skip_voice, self.skip_animation, self.skip_video_note = set(), set(), set(), set(), set(), set(), set()
-        self.success_video, self.success_photo, self.success_document, self.success_audio, self.success_voice, self.success_animation, self.success_video_note = set(), set(), set(), set(), set(), set(), set()
-        self.failure_video, self.failure_photo, self.failure_document, self.failure_audio, self.failure_voice, self.failure_animation, self.failure_video_note = set(), set(), set(), set(), set(), set(), set()
+        self.skip_video, self.skip_photo, self.skip_document, self.skip_audio, self.skip_voice, self.skip_animation, self.skip_video_note, self.skip_live_photo = set(), set(), set(), set(), set(), set(), set(), set()
+        self.success_video, self.success_photo, self.success_document, self.success_audio, self.success_voice, self.success_animation, self.success_video_note, self.success_live_photo = set(), set(), set(), set(), set(), set(), set(), set()
+        self.failure_video, self.failure_photo, self.failure_document, self.failure_audio, self.failure_voice, self.failure_animation, self.failure_video_note, self.failure_live_photo = set(), set(), set(), set(), set(), set(), set(), set()
 
     def print_count_table(
             self,
@@ -89,6 +91,9 @@ class StatisticalTable:
         success_video_note: int = len(self.success_video_note)
         failure_video_note: int = len(self.failure_video_note)
         skip_video_note: int = len(self.skip_video_note)
+        success_live_photo: int = len(self.success_live_photo)
+        failure_live_photo: int = len(self.failure_live_photo)
+        skip_live_photo: int = len(self.skip_live_photo)
         total_video: int = sum([success_video, failure_video, skip_video])
         total_photo: int = sum([success_photo, failure_photo, skip_photo])
         total_document: int = sum([success_document, failure_document, skip_document])
@@ -96,6 +101,7 @@ class StatisticalTable:
         total_voice: int = sum([success_voice, failure_voice, skip_voice])
         total_animation: int = sum([success_animation, failure_animation, skip_animation])
         total_video_note: int = sum([success_video_note, failure_video_note, skip_video_note])
+        total_live_photo: int = sum([success_live_photo, failure_live_photo, skip_live_photo])
         table_data = [
             [_t(DownloadType.VIDEO), success_video, failure_video, skip_video, total_video],
             [_t(DownloadType.PHOTO), success_photo, failure_photo, skip_photo, total_photo],
@@ -104,14 +110,16 @@ class StatisticalTable:
             [_t(DownloadType.VOICE), success_voice, failure_voice, skip_voice, total_voice],
             [_t(DownloadType.ANIMATION), success_animation, failure_animation, skip_animation, total_animation],
             [_t(DownloadType.VIDEO_NOTE), success_video_note, failure_video_note, skip_video_note, total_video_note],
+            [_t(DownloadType.LIVE_PHOTO), success_live_photo, failure_live_photo, skip_live_photo, total_live_photo],
             ['合计',
              sum([success_video, success_photo, success_document, success_audio, success_voice, success_animation,
-                  success_video_note]),
+                  success_video_note, success_live_photo]),
              sum([failure_video, failure_photo, failure_document, failure_audio, failure_voice, failure_animation,
-                  failure_video_note]),
-             sum([skip_video, skip_photo, skip_document, skip_audio, skip_voice, skip_animation, skip_video_note]),
+                  failure_video_note, failure_live_photo]),
+             sum([skip_video, skip_photo, skip_document, skip_audio, skip_voice, skip_animation, skip_video_note,
+                  skip_live_photo]),
              sum([total_video, total_photo, total_document, total_audio, total_voice, total_animation,
-                  total_video_note]),
+                  total_video_note, total_live_photo]),
              ]
         ]
         if len(table_data) < 3:
@@ -418,6 +426,9 @@ class StatisticalTable:
                  ],
                 [_t(DownloadType.VIDEO_NOTE),
                  ProcessConfig.get_dtype(_dtype).get('video_note', False)
+                 ],
+                [_t(DownloadType.LIVE_PHOTO),
+                 ProcessConfig.get_dtype(_dtype).get('live_photo', False)
                  ]
             ]
             download_type_table = PanelTable(title='下载类型', header=('类型', '是否下载'), data=data)
@@ -427,11 +438,16 @@ class StatisticalTable:
 
     @staticmethod
     def print_env_table(app):
+        update_version: str = check_update(
+            remote_version=rc.cached_config().get('version', __version__),
+            local_version=__version__
+        )
         log.debug(
             {
                 'platform': app.platform,
                 'python_version': sys.version.split()[0],
                 'TRMD_version': __version__,
+                'update_version': update_version,
                 'pyrogram_version': pyrogram_version,
                 'user_config_path': app.config_path,
                 'session_directory': app.work_directory,
@@ -445,7 +461,7 @@ class StatisticalTable:
             data=[
                 ['平台', app.platform],
                 ['Python版本', sys.version.split()[0]],
-                ['TRMD版本', __version__],
+                ['TRMD版本', f'{__version__}({update_version}⬆)' if update_version else __version__],
                 ['Pyrogram版本', pyrogram_version],
                 ['用户配置文件', app.config_path],
                 ['保存目录', app.save_directory],

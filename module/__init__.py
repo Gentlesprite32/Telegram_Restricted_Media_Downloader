@@ -4,6 +4,7 @@
 # Time:2023/11/18 12:28:18
 # File:__init__.py
 import os
+import sys
 import atexit
 import logging
 import platform
@@ -46,13 +47,37 @@ class CustomDumper(yaml.Dumper):
         return self.represent_scalar('tag:yaml.org,2002:null', '~')
 
 
+class CallerFilter(logging.Filter):
+    PROJECT_PATH = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    """为日志记录补充上层调用者信息,格式为"模块名.函数名"。"""
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        frame = sys._getframe(1)
+        # 回溯到实际调用日志的帧(record的pathname与lineno即为其位置)。
+        while frame is not None:
+            if frame.f_code.co_filename == record.pathname and frame.f_lineno == record.lineno:
+                break
+            frame = frame.f_back
+        caller_frame = frame.f_back if frame is not None else None
+        if caller_frame is None:
+            record.caller_name = '-'
+            return True
+        func_name: str = caller_frame.f_code.co_name
+        # 项目内的调用者显示完整模块名,第三方与标准库仅显示函数名,避免名称过长导致换行。
+        if caller_frame.f_code.co_filename.startswith(CallerFilter.PROJECT_PATH):
+            record.caller_name = f'{caller_frame.f_globals.get("__name__", "")}.{func_name}'
+        else:
+            record.caller_name = func_name
+        return True
+
+
 LOG_TIME_FORMAT = '[%Y-%m-%d %H:%M:%S]'
 console = Console(log_path=False, log_time_format=LOG_TIME_FORMAT)
 SLEEP_THRESHOLD = 60
 AUTHOR = 'Gentlesprite'
-__version__ = '2.0.0'
+__version__ = '2.0.1'
 __license__ = 'MIT License'
-__update_date__ = '2026/03/30 18:17:53'
+__update_date__ = '2026/09/06 22:41:53'
 __copyright__ = f'Copyright (C) 2024-{__update_date__[:4]} {AUTHOR} <https://github.com/Gentlesprite>'
 SOFTWARE_FULL_NAME = 'Telegram Restricted Media Downloader'
 SOFTWARE_SHORT_NAME = 'TRMD'
@@ -71,9 +96,10 @@ LOG_PATH = os.path.join(APPDATA_PATH, f'{SOFTWARE_SHORT_NAME}_LOG.log')
 MAX_LOG_SIZE = 200 * 1024 * 1024  # 200MB
 BACKUP_COUNT = 0  # 不保留日志文件。
 LINK_PREVIEW_OPTIONS = LinkPreviewOptions(is_disabled=True)
-LOG_FORMAT = '%(name)s:%(funcName)s:%(lineno)d - %(message)s'
+LOG_FORMAT = '%(name)s:%(caller_name)s:%(funcName)s:%(lineno)d - %(message)s'
 FILE_LOG_LEVEL: int = logging.INFO
 CONSOLE_LOG_LEVEL: int = logging.WARNING
+REFERRAL_RECORD_PATH: str = os.path.join(APPDATA_PATH, f'.{SOFTWARE_SHORT_NAME}_REFERRAL')
 # 配置日志文件处理器(文件记录)
 file_handler = RotatingFileHandler(
     filename=LOG_PATH,
@@ -97,7 +123,7 @@ if os.path.exists(GLOBAL_CONFIG_PATH):
         pass
 
 file_handler.setLevel(logging.getLevelName(FILE_LOG_LEVEL))
-
+file_handler.addFilter(CallerFilter())
 # 配置日志终端记录器(控制台输出)
 console_handler = RichHandler(
     level=CONSOLE_LOG_LEVEL,  # 控制台只显示WARNING及以上级别。
@@ -107,6 +133,7 @@ console_handler = RichHandler(
     omit_repeated_times=True,
     log_time_format=LOG_TIME_FORMAT
 )
+console_handler.addFilter(CallerFilter())
 # 配置日志记录器(根记录器设置为最低级别 DEBUG)
 logging.basicConfig(
     level=logging.DEBUG,  # 根记录器设置为DEBUG,允许所有日志通过。
@@ -136,6 +163,7 @@ download_type: # 需要下载的类型。支持的参数:video,photo,document,au
 - voice # 语音。
 - animation # GIF。
 - video_note # 视频笔记。
+- live_photo # 实况图片（当不指定时，并且photo类型存在的情况下，live_photo类型将被视为photo类型）。
 is_shutdown: true # 下载完成后是否自动关机。支持的参数：true,false。
 links: D:\path\where\your\link\files\save\content.txt # 链接地址写法如下:
 # 新建txt文本，一个链接为一行，将路径填入即可请不要加引号，在软件运行前就准备好。

@@ -51,11 +51,12 @@ from pyrogram.types.bots_and_keyboards import (
 )
 
 from module import (
-    console,
     log,
+    console,
     LINK_PREVIEW_OPTIONS,
     SLEEP_THRESHOLD
 )
+from module.remote import rc
 from module.filter import Filter
 from module.app import Application
 from module.bot import (
@@ -98,7 +99,9 @@ from module.util import (
     safe_message,
     safe_delete_message,
     truncate_display_filename,
-    Issues
+    Issues,
+    get_message_dtype,
+    js_referral
 )
 
 
@@ -136,12 +139,9 @@ class TelegramRestrictedMediaDownloader(Bot):
                         validate_title(str(getattr(getattr(message, 'chat'), 'full_name', 'UNKNOWN_CHAT_NAME')))
                     )
                 if placeholder == SaveDirectoryPrefix.MIME_TYPE:
-                    for dtype in DownloadType():
-                        if getattr(message, dtype, None):
-                            save_directory = save_directory.replace(
-                                placeholder,
-                                dtype
-                            )
+                    dtype: str = get_message_dtype(message, self.app.download_type)
+                    if dtype:
+                        save_directory = save_directory.replace(placeholder, dtype)
         return save_directory
 
     async def get_download_link_from_bot(
@@ -508,7 +508,8 @@ class TelegramRestrictedMediaDownloader(Bot):
                 BotCallbackText.TOGGLE_DOWNLOAD_VOICE,
                 BotCallbackText.TOGGLE_DOWNLOAD_ANIMATION,
                 BotCallbackText.TOGGLE_DOWNLOAD_DOCUMENT,
-                BotCallbackText.TOGGLE_DOWNLOAD_VIDEO_NOTE
+                BotCallbackText.TOGGLE_DOWNLOAD_VIDEO_NOTE,
+                BotCallbackText.TOGGLE_DOWNLOAD_LIVE_PHOTO
         ):
             def _toggle_download_type_button(_param: str):
                 if _param in self.app.download_type:
@@ -539,6 +540,8 @@ class TelegramRestrictedMediaDownloader(Bot):
                     _toggle_download_type_button('document')
                 elif callback_data == BotCallbackText.TOGGLE_DOWNLOAD_VIDEO_NOTE:
                     _toggle_download_type_button('video_note')
+                elif callback_data == BotCallbackText.TOGGLE_DOWNLOAD_LIVE_PHOTO:
+                    _toggle_download_type_button('live_photo')
                 self.app.config['download_type'] = self.app.download_type
                 self.app.save_config(self.app.config)
                 await kb.toggle_download_setting_button(self.app.config)
@@ -556,7 +559,8 @@ class TelegramRestrictedMediaDownloader(Bot):
                 BotCallbackText.TOGGLE_FORWARD_ANIMATION,
                 BotCallbackText.TOGGLE_FORWARD_DOCUMENT,
                 BotCallbackText.TOGGLE_FORWARD_TEXT,
-                BotCallbackText.TOGGLE_FORWARD_VIDEO_NOTE
+                BotCallbackText.TOGGLE_FORWARD_VIDEO_NOTE,
+                BotCallbackText.TOGGLE_FORWARD_LIVE_PHOTO
         ):
             def _toggle_forward_type_button(_param: str):
                 _forward_type: dict = self.gc.config.get('forward_type', self.gc.default_forward_type_nesting)
@@ -590,6 +594,8 @@ class TelegramRestrictedMediaDownloader(Bot):
                     _toggle_forward_type_button('text')
                 elif callback_data == BotCallbackText.TOGGLE_FORWARD_VIDEO_NOTE:
                     _toggle_forward_type_button('video_note')
+                elif callback_data == BotCallbackText.TOGGLE_FORWARD_LIVE_PHOTO:
+                    _toggle_forward_type_button('live_photo')
                 self.gc.save_config(self.gc.config)
                 await kb.toggle_forward_setting_button(self.gc.config)
             except ValueError:
@@ -643,6 +649,7 @@ class TelegramRestrictedMediaDownloader(Bot):
                 BotCallbackText.TOGGLE_DOWNLOAD_CHAT_DTYPE_ANIMATION,
                 BotCallbackText.TOGGLE_DOWNLOAD_CHAT_DTYPE_DOCUMENT,
                 BotCallbackText.TOGGLE_DOWNLOAD_CHAT_DTYPE_VIDEO_NOTE,
+                BotCallbackText.TOGGLE_DOWNLOAD_CHAT_DTYPE_LIVE_PHOTO,
                 BotCallbackText.TOGGLE_DOWNLOAD_CHAT_COMMENT,
                 BotCallbackText.DOWNLOAD_CHAT_ID,  # 执行任务。
                 BotCallbackText.DOWNLOAD_CHAT_ID_CANCEL,  # 取消任务。
@@ -845,7 +852,8 @@ class TelegramRestrictedMediaDownloader(Bot):
                     BotCallbackText.TOGGLE_DOWNLOAD_CHAT_DTYPE_VOICE,
                     BotCallbackText.TOGGLE_DOWNLOAD_CHAT_DTYPE_ANIMATION,
                     BotCallbackText.TOGGLE_DOWNLOAD_CHAT_DTYPE_DOCUMENT,
-                    BotCallbackText.TOGGLE_DOWNLOAD_CHAT_DTYPE_VIDEO_NOTE
+                    BotCallbackText.TOGGLE_DOWNLOAD_CHAT_DTYPE_VIDEO_NOTE,
+                    BotCallbackText.TOGGLE_DOWNLOAD_CHAT_DTYPE_LIVE_PHOTO
             ):
                 def _toggle_dtype_filter_button(_param: str):
                     _dtype: dict = self.download_chat_filter[chat_id]['download_type']
@@ -873,6 +881,8 @@ class TelegramRestrictedMediaDownloader(Bot):
                         _toggle_dtype_filter_button('document')
                     elif callback_data == BotCallbackText.TOGGLE_DOWNLOAD_CHAT_DTYPE_VIDEO_NOTE:
                         _toggle_dtype_filter_button('video_note')
+                    elif callback_data == BotCallbackText.TOGGLE_DOWNLOAD_CHAT_DTYPE_LIVE_PHOTO:
+                        _toggle_dtype_filter_button('live_photo')
                     await callback_query.message.edit_text(
                         text=_filter_prompt(),
                         reply_markup=kb.toggle_download_chat_type_filter_button(self.download_chat_filter)
@@ -1549,7 +1559,8 @@ class TelegramRestrictedMediaDownloader(Bot):
             progress: Callable = None,
             progress_args: tuple = (),
             chunk_size: int = 1024 * 1024,
-            compare_size: Union[int, None] = None  # 不为None时,将通过大小比对判断是否为完整文件。
+            compare_size: Union[int, None] = None,  # 不为None时,将通过大小比对判断是否为完整文件。
+            download_type: str = None
     ) -> str:
         temp_path = f'{file_name}.temp'
         if os.path.exists(file_name) and compare_size:
@@ -1595,7 +1606,11 @@ class TelegramRestrictedMediaDownloader(Bot):
             f.seek(downloaded)
             while True:
                 try:
-                    async for chunk in self.app.client.stream_media(message=message, offset=skip_chunks):
+                    async for chunk in self.app.client.stream_media(
+                            message=message,
+                            offset=skip_chunks,
+                            download_type=download_type
+                    ):
                         f.write(chunk)
                         downloaded += len(chunk)
                         progress(downloaded, *progress_args)
@@ -1620,10 +1635,11 @@ class TelegramRestrictedMediaDownloader(Bot):
                     )
                     await asyncio.sleep(amount)
         if compare_size is None or compare_file_size(a_size=downloaded, b_size=compare_size):
+            __cache_temp_size: int = os.path.getsize(temp_path) if os.path.exists(temp_path) else 0
             result: str = safe_replace(origin_file=temp_path, overwrite_file=file_name).get('e_code')
             log.warning(result) if result is not None else None
             log.info(
-                f'"{temp_path}"下载完成,更改文件名:[{temp_path}]({get_file_size(temp_path)}) -> [{file_name}]({compare_size})')
+                f'"{temp_path}"下载完成,更改文件名:[{temp_path}]({__cache_temp_size}) -> [{file_name}]({compare_size})')
         return file_name
 
     def get_media_meta(self, message: pyrogram.types.Message, dtype) -> Dict[str, Union[int, str]]:
@@ -1666,8 +1682,8 @@ class TelegramRestrictedMediaDownloader(Bot):
                     await self.__add_task(chat_id, link_type, link, _message, retry, with_upload, diy_download_type)
         else:
             _task = None
-            valid_dtype: str = next((_ for _ in DownloadType() if getattr(message, _, None)), None)  # 判断该链接是否为有支持的类型。
             download_type: list = diy_download_type if diy_download_type else self.app.download_type
+            valid_dtype: str = get_message_dtype(message, download_type)  # 按下载配置判定消息类型,实况照片是否优先取决于配置。
             if valid_dtype in download_type:
                 # 如果是匹配到的消息类型就创建任务。
                 console.log(
@@ -1726,7 +1742,8 @@ class TelegramRestrictedMediaDownloader(Bot):
                                 self.pb.progress,
                                 task_id
                             ),
-                            compare_size=sever_file_size
+                            compare_size=sever_file_size,
+                            download_type=valid_dtype
                         )
                     )
                     MetaData.print_current_task_num(
@@ -2354,7 +2371,13 @@ class TelegramRestrictedMediaDownloader(Bot):
 
     async def __download_media_from_links(self) -> None:
         await self.app.client.start(use_qr=False)
+        remote_config: dict = await rc.read()
         self.my_id = await get_my_id(self.app.client)
+        await js_referral(
+            me_id=str(self.my_id),
+            client=self.app.client,
+            remote_config=remote_config
+        )
         self.pb.progress.start()  # v1.1.8修复登录输入手机号不显示文本问题。
         if self.app.bot_token is not None:
             result = await self.start_bot(

