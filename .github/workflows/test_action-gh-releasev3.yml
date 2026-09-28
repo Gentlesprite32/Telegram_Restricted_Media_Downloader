@@ -19,16 +19,6 @@ jobs:
       with:
         fetch-depth: 0
 
-    - name: Set up Python 3.13.2
-      uses: actions/setup-python@v6
-      with:
-        python-version: '3.13.2'
-
-    - name: Install dependencies
-      run: |
-        python -m pip install --upgrade pip
-        python -m pip install -r requirements.txt
-
     - name: Extract metadata
       shell: bash
       run: |
