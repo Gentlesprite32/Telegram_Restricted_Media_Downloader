@@ -44,7 +44,7 @@ jobs:
         cp "res\Wiki.pdf" "release\使用手册\常见问题及解决方案汇总.pdf"
         cp "res\2_5_1.png" "release\使用手册\软件更新教程.png"
         cd release
-        zip -r "TRMD_${{ env.CLEAN_VERSION }}-windows-64.zip" "TRMD.exe" "使用手册"
+        "../res/bin/rar" a "TRMD_${{ env.CLEAN_VERSION }}-linux-64.rar" "TRMD" "使用手册"
         rm -rf "使用手册"
 
     - name: Upload release asset to GitHub
