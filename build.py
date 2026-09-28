@@ -53,8 +53,8 @@ def ready_commit_hash() -> Union[str, None]:
 
 
 def build(command):
-    print(f'Command:\n{command}\n{GRID}')
-    print('Build in progress:')
+    print(f'Command:\n{command}\n{GRID}', flush=True)
+    print('Build in progress:', flush=True)
     subprocess.run(command, shell=True)
 
 
@@ -71,7 +71,7 @@ def check_python_version():
             f'Python版本不满足要求\n当前版本:{sys.version}\n要求范围:{".".join(map(str, MIN_PYTHON_VERSION))} ≤ Python 版本 < {".".join(map(str, MAX_PYTHON_VERSION))}\n请安装符合要求的Python版本后重试。')
         sys.exit(1)
 
-    print(f'{GRID}\nPython:\n{sys.version}\n{GRID}')
+    print(f'{GRID}\nPython:\n{sys.version}\n{GRID}', flush=True)
 
 
 VERSION_INFO = sys.version_info
@@ -101,6 +101,11 @@ if __name__ == '__main__':
     try:
         ready_nuitka()
         commit_hash: Union[str, None] = ready_commit_hash()
+        _version = __version__
+        for _arg in sys.argv:
+            if _arg.startswith('--version='):
+                _version = _arg.split('=', 1)[1]
+                break
         build_command = f'{sys.executable} -m '
         build_command += f'nuitka --standalone --onefile '
         build_command += f'--assume-yes-for-downloads '
@@ -110,11 +115,11 @@ if __name__ == '__main__':
         build_command += f'--clang --windows-icon-from-ico="{ICO_PATH}" ' if PLATFORM == 'win32' else ''
         build_command += f'--include-package-data=pyrogram '
         build_command += ''.join(map(lambda d: f'--include-data-dir="{d[0]}"="{d[1]}" ', ready_web()))
-        build_command += f'--output-dir={OUTPUT} --output-filename="{SOFTWARE_SHORT_NAME}{EXTENSION}" --file-version={__version__} --product-version={__version__} --copyright="{COPYRIGHT}" '
+        build_command += f'--output-dir={OUTPUT} --output-filename="{SOFTWARE_SHORT_NAME}{EXTENSION}" --file-version={_version} --product-version={_version} --copyright="{COPYRIGHT}" '
         build_command += f'--low-memory ' if '--low-memory' in sys.argv else ''
         build_command += f'--remove-output ' if '--remove-output' in sys.argv else ''
         build_command += ''.join(f'{arg} ' for arg in sys.argv if arg.startswith('--disable-cache='))
         build_command += f'--script-name={SCRIPT_NAME}'
         build(build_command)
     except KeyboardInterrupt:
-        print('键盘中断。')
+        pass
