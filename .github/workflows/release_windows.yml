@@ -4,6 +4,11 @@ on:
   push:
     tags:
       - 'v*.*.*'
+  workflow_dispatch:
+    inputs:
+      version:
+        description: '版本号 eg. x.x.x(.x)'
+        required: true
 
 jobs:
   build:
@@ -27,17 +32,23 @@ jobs:
     - name: Extract metadata
       shell: bash
       run: |
-        TAG_NAME=${GITHUB_REF#refs/tags/}
+        if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+          TAG_NAME="v${{ github.event.inputs.version }}"
+          VERSION_ARG="--version=${{ github.event.inputs.version }}"
+        else
+          TAG_NAME=${GITHUB_REF#refs/tags/}
+          VERSION_ARG=""
+        fi
         CLEAN_VERSION=${TAG_NAME#v}
         echo "TAG_NAME=$TAG_NAME" >> $GITHUB_ENV
         echo "CLEAN_VERSION=$CLEAN_VERSION" >> $GITHUB_ENV
+        echo "VERSION_ARG=$VERSION_ARG" >> $GITHUB_ENV
 
     - name: Build
       shell: bash
       env:
         PYTHONIOENCODING: UTF-8
-      run:
-        python build.py --disable-cache=all --remove-output
+      run: python build.py --disable-cache=all --remove-output $VERSION_ARG
 
     - name: Prepare release files
       shell: bash
